@@ -7,6 +7,8 @@
 
 /* You won't lose style points for including this long line in your code */
 static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:10.0.3) Gecko/20120305 Firefox/10.0.3\r\n";
+static const char *proxy_connect_hdr = "Proxy-Connection: close\r\n";
+static const char *connection_hdr = "Connection: close\r\n";
 
 void *doit(void *fd);
 //void read_requesthdrs(rio_t *rp);
@@ -17,9 +19,10 @@ void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, 
                  char *shortmsg, char *longmsg);
 void process_proxy_req(char *uri, rio_t *rio);
-void make_request_line(char *olduri, char *fwdreq);
-void make_fwd_requesthdrs(rio_t *rp, int clientfd, char *fwdreq);
+void send_request_line(char *olduri, int clientfd);
+void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd);
 void get_host_and_port(char *olduri, char *host, char *port);
+void safe_send(int clientfd, char *bytes, int len);
 
 int i_after_slashes(int nslashes, char *bytes);
 
@@ -122,29 +125,32 @@ void process_proxy_req(char *uri, rio_t *rio)
 {
     printf("processing proxy req\n");
     char fwdreq[MAXBUF];
-    make_request_line(uri, fwdreq);
     char host[MAXLINE];
     char port[6];
+    
     get_host_and_port(uri, host, port);
-    int clientfd;
+    int clientfd = open_clientfd(host, port);
+    send_request_line(uri, clientfd);
     
-    printf("FWDREQ: %s\n",fwdreq);
-//    make_fwd_requesthdrs(rio, )
-    
+    make_fwd_requesthdrs(rio, host, clientfd);  //NOTE - i should either pass fwdreq in and build it in here, or should send clientfd in and send the request line by line
     
 //    printf("FWDREQ: %s\n",fwdreq);
+    //send fwdreq to clientfd
 }
 
 /*
  * Makes request line to forward to the actual desired client.
  */
-void make_request_line(char *olduri, char *fwdreq)
+void send_request_line(char *olduri, int clientfd)
 {
     char newuri[MAXLINE];
+    char reqline[MAXLINE];
     int i = i_after_slashes(3, olduri) - 1; //points you at the first slash of the suffix of the URL
     strcpy(newuri, olduri+i);
-    
-    sprintf(fwdreq, "GET %s HTTP/1.1\r\n", newuri);
+    int len = sprintf(reqline, "GET %s HTTP/1.1\r\n", newuri);
+    printf("Reqline: %s\n",reqline);
+    if(rio_writen(clientfd, reqline, len) < 0)
+        printf("*** Send request line failed ***\n");
 }
 
 /*
@@ -182,21 +188,61 @@ void get_host_and_port(char *olduri, char *host, char *port)
 /*
  * make_fwd_requesthdrs - reads HTTP request headers for a proxy request,
  *                          modifies as necessary, and saves the new ones into fwdreq
+ * NOTE - I should either pass fwdreq in and build it in here, or should send clientfd in and send the request line by line within this f(x)
  */
-void make_fwd_requesthdrs(rio_t *rp, int clientfd, char *fwdreq)
+void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
 {
     char curr_line[MAXLINE];
+    int connection_hdr_sent = 0; //bool
+    int proxy_hdr_sent = 0; //bool
+    int len;
 
-    Rio_readlineb(rp, curr_line, MAXLINE);
-    printf("%s", curr_line);
-    while(strcmp(curr_line, "\r\n")) {
-        int len = Rio_readlineb(rp, curr_line, MAXLINE);
-        printf("%s", curr_line);
-        if(rio_writen(clientfd, curr_line, len) < 0)
-            printf("*** Send failed ***\n");
+    while(1) {
+        len = Rio_readlineb(rp, curr_line, MAXLINE);
+        if(!strcmp(curr_line, "\r\n")) //if the curr line = \r\n, end
+            break;
+        if(strstr(curr_line, "Host:"))
+            len = sprintf(curr_line, "Host: %s\r\n", host);
+        else if(strstr(curr_line, "User-Agent:"))
+            len = sprintf(curr_line, "%s", user_agent_hdr);
+        else if(strstr(curr_line, "Proxy-Connection:"))
+        {
+            len = sprintf(curr_line, "%s", proxy_connect_hdr);
+            proxy_hdr_sent = 1;
+        }
+        else if(strstr(curr_line, "Connection:"))  //Notice the order here is important, only check for "Connection" if not "Proxy-Connection"
+        {
+            len = sprintf(curr_line, "%s", connection_hdr);
+            connection_hdr_sent = 1;
+        }
+        
+        safe_send(clientfd, curr_line, len);
     }
-    printf("Done with read request hdrs\n\n"); //DEBUG purposes
+    
+    if(!connection_hdr_sent) //make sure connection header gets sent
+    {
+        len = sprintf(curr_line, "%s", connection_hdr);
+        printf("%s", curr_line);
+        safe_send(clientfd, curr_line, len);
+    }
+    if(!proxy_hdr_sent)
+    {
+        len = sprintf(curr_line, "%s", proxy_connect_hdr);
+        safe_send(clientfd, curr_line, len);
+    }
+    
+    //send the terminating blank line for the request hdrs last
+    safe_send(clientfd, "\r\n", 2);
+    
+    printf("Done with send request hdrs\n\n"); //DEBUG purposes
     return;
+}
+
+void safe_send(int clientfd, char *bytes, int len)
+{
+    printf("%s", bytes);
+    if(rio_writen(clientfd, bytes, len) < 0)
+        printf("*** Send failed for: %s ***\n", bytes);
 }
 
 /*
@@ -211,6 +257,16 @@ int i_after_slashes(int nslashes, char *bytes)
     }
     return i;
 }
+
+
+
+
+/***************************************** OLD TINY.C STUFF *****************************************/
+/****************************************************************************************************/
+/****************************************************************************************************/
+/****************************************************************************************************/
+/****************************************************************************************************/
+
 
 /*
  * parse_uri - parse URI into filename and CGI args
