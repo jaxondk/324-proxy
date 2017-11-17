@@ -124,7 +124,7 @@ void process_proxy_req(char *uri, rio_t *rio)
     char fwdreq[MAXBUF];
     make_request_line(uri, fwdreq);
     char host[MAXLINE];
-    char port[5];
+    char port[6];
     get_host_and_port(uri, host, port);
     int clientfd;
     
@@ -165,12 +165,15 @@ void get_host_and_port(char *olduri, char *host, char *port)
         int port_i = colon_i + 1;
         strncpy(host, olduri+host_i, colon_i-host_i);
         strncpy(port, olduri+port_i, suffix_i-port_i);
+        host[colon_i-host_i] = '\0';
+        port[suffix_i-port_i] = '\0';
         printf("Colon present. Host: %s | Port: %s\n", host, port);
     }
     else //if no colon, set host and then make port the default for http (80)
     {
         strncpy(host, olduri+host_i, suffix_i-host_i);
         strcpy(port, "80");
+        host[suffix_i-host_i] = '\0';
         printf("No colon present. Host: %s | Port: %s\n", host, port);
     }
     
