@@ -153,14 +153,17 @@ void fwd_response(int rcvr_fd, int responder_fd)
 
     char curr_line[MAXLINE];
     int len = 2; //just in case the response is just "\r\n", as this would mean len would never get initialized
+    int blanklines = 0;
     
     do
     {
         len = Rio_readlineb(&rio_responder, curr_line, MAXLINE);
         safe_send(rcvr_fd, curr_line, len);
-    } while(strcmp(curr_line, "\r\n"));
+        if(!strcmp(curr_line, "\r\n")) //if curr line is \r\n
+            blanklines++;
+    } while(blanklines < 2);
     
-    safe_send(rcvr_fd, curr_line, len);
+    safe_send(rcvr_fd, curr_line, len); //send the last blank line
 }
 
 /*
