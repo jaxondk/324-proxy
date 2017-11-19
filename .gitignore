@@ -2,3 +2,7 @@
 *.o
 proxy
 tiny/*.out
+.noproxy
+.proxy
+tiny/cgi-bin/adder
+tiny/tiny
