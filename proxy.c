@@ -151,19 +151,30 @@ void fwd_response(int rcvr_fd, int responder_fd)
     rio_t rio_responder;
     Rio_readinitb(&rio_responder, responder_fd);
 
-    char curr_line[MAXLINE];
+    char bytes[MAXLINE];
     int len = 2; //just in case the response is just "\r\n", as this would mean len would never get initialized
-    int blanklines = 0;
+    int content_len = 0;
     
+    //send headers and get content-length
     do
     {
-        len = Rio_readlineb(&rio_responder, curr_line, MAXLINE);
-        safe_send(rcvr_fd, curr_line, len);
-        if(!strcmp(curr_line, "\r\n")) //if curr line is \r\n
-            blanklines++;
-    } while(blanklines < 2);
+        len = Rio_readlineb(&rio_responder, bytes, MAXLINE);
+        if(strstr(bytes, "Content-length:"))
+        {
+            int i = strlen("Content-length:");
+            content_len = atoi((bytes+i));
+        }
+        safe_send(rcvr_fd, bytes, len);
+    } while(strcmp(bytes, "\r\n"));    
     
-    safe_send(rcvr_fd, curr_line, len); //send the last blank line
+    //send response body
+    int total_len = 0;
+    while(total_len < content_len)
+    {
+        len = Rio_readlineb(&rio_responder, bytes, MAXLINE);
+        total_len += len;
+        safe_send(rcvr_fd, bytes, len);
+    }
 }
 
 /*
