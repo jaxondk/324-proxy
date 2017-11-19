@@ -5,7 +5,7 @@
 # build your proxy from sources.
 #
 
-BYUNETID = NOBODY
+BYUNETID = jaxondk
 VERSION = 1
 HANDINDIR = /users/faculty/snell/CS324/handin/Fall2017/ProxyLab1
 
