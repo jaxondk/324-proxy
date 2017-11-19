@@ -11,18 +11,18 @@ static const char *proxy_connect_hdr = "Proxy-Connection: close\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 
 void *doit(void *fd);
-//void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
 void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum, 
                  char *shortmsg, char *longmsg);
-void process_proxy_req(char *uri, rio_t *rio);
+int fwd_request(char *uri, rio_t *rio);
 void send_request_line(char *olduri, int clientfd);
-void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd);
+void send_fwd_requesthdrs(rio_t *rp, char *host, int clientfd);
 void get_host_and_port(char *olduri, char *host, char *port);
 void safe_send(int clientfd, char *bytes, int len);
+void fwd_response(int rcvr_fd, int responder_fd);
 
 int i_after_slashes(int nslashes, char *bytes);
 
@@ -72,8 +72,8 @@ void *doit(void *fd)
         Close(fd);
         return NULL;
     }
-    printf("Request headers:\n");
-    printf("%s", buf); //prints request line
+//    printf("Incoming request line:\n");
+//    printf("%s", buf); //prints request line
     sscanf(buf, "%s %s %s", method, uri, version); //copies the 3 strings from request line into these vars
     if (strcasecmp(method, "GET")) {
         clienterror(fd, method, "501", "Not Implemented",
@@ -82,7 +82,9 @@ void *doit(void *fd)
         return NULL;
     }
     if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
-        process_proxy_req(uri, &rio);
+        int responder_fd = fwd_request(uri, &rio);
+        fwd_response(fd, responder_fd);
+        Close(responder_fd);
         Close(fd);
         return NULL;
     }
@@ -119,23 +121,46 @@ void *doit(void *fd)
     }
     
     Close(fd);
+    return NULL;
 }
 
-void process_proxy_req(char *uri, rio_t *rio)
+/*
+ * Processes the proxy request, modifying request line and host header,
+ * attaches User-agent, connection, and proxy-connection headers, and then
+ * forwards the request to the desired host.
+ *
+ * Returns the file descriptor for the socket connection with desired host
+ */
+int fwd_request(char *uri, rio_t *rio)
 {
-    printf("processing proxy req\n");
-    char fwdreq[MAXBUF];
     char host[MAXLINE];
     char port[6];
     
     get_host_and_port(uri, host, port);
     int clientfd = open_clientfd(host, port);
     send_request_line(uri, clientfd);
+    send_fwd_requesthdrs(rio, host, clientfd);
+    return clientfd;
+}
+
+/*
+ * Forwards the response from the host at responder fd to the initiator of the original request at receiver fd.
+ */
+void fwd_response(int rcvr_fd, int responder_fd)
+{
+    rio_t rio_responder;
+    Rio_readinitb(&rio_responder, responder_fd);
+
+    char curr_line[MAXLINE];
+    int len = 2; //just in case the response is just "\r\n", as this would mean len would never get initialized
     
-    make_fwd_requesthdrs(rio, host, clientfd);  //NOTE - i should either pass fwdreq in and build it in here, or should send clientfd in and send the request line by line
+    do
+    {
+        len = Rio_readlineb(&rio_responder, curr_line, MAXLINE);
+        safe_send(rcvr_fd, curr_line, len);
+    } while(strcmp(curr_line, "\r\n"));
     
-//    printf("FWDREQ: %s\n",fwdreq);
-    //send fwdreq to clientfd
+    safe_send(rcvr_fd, curr_line, len);
 }
 
 /*
@@ -148,9 +173,8 @@ void send_request_line(char *olduri, int clientfd)
     int i = i_after_slashes(3, olduri) - 1; //points you at the first slash of the suffix of the URL
     strcpy(newuri, olduri+i);
     int len = sprintf(reqline, "GET %s HTTP/1.1\r\n", newuri);
-    printf("Reqline: %s\n",reqline);
-    if(rio_writen(clientfd, reqline, len) < 0)
-        printf("*** Send request line failed ***\n");
+    
+    safe_send(clientfd, reqline, len);
 }
 
 /*
@@ -162,8 +186,6 @@ void get_host_and_port(char *olduri, char *host, char *port)
     int suffix_i = i_after_slashes(3, olduri) - 1; //pointing to the '/' after host:port
     char* colon_ptr = strstr(olduri+host_i, ":");
     
-    printf("host i: %d | suffix i: %d | colonptr - olduri: %d\n", host_i, suffix_i, colon_ptr-olduri);
-    
     //if there's a colon, split the host:port accordingly
     if(colon_ptr)
     {
@@ -173,24 +195,21 @@ void get_host_and_port(char *olduri, char *host, char *port)
         strncpy(port, olduri+port_i, suffix_i-port_i);
         host[colon_i-host_i] = '\0';
         port[suffix_i-port_i] = '\0';
-        printf("Colon present. Host: %s | Port: %s\n", host, port);
     }
     else //if no colon, set host and then make port the default for http (80)
     {
         strncpy(host, olduri+host_i, suffix_i-host_i);
         strcpy(port, "80");
         host[suffix_i-host_i] = '\0';
-        printf("No colon present. Host: %s | Port: %s\n", host, port);
     }
     
 }
 
 /*
- * make_fwd_requesthdrs - reads HTTP request headers for a proxy request,
- *                          modifies as necessary, and saves the new ones into fwdreq
- * NOTE - I should either pass fwdreq in and build it in here, or should send clientfd in and send the request line by line within this f(x)
+ * send_fwd_requesthdrs - reads HTTP request headers for a proxy request,
+ *                          modifies as necessary, and sends them to clientfd one line at a time
  */
-void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
+void send_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
 {
     char curr_line[MAXLINE];
     int connection_hdr_sent = 0; //bool
@@ -222,7 +241,6 @@ void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
     if(!connection_hdr_sent) //make sure connection header gets sent
     {
         len = sprintf(curr_line, "%s", connection_hdr);
-        printf("%s", curr_line);
         safe_send(clientfd, curr_line, len);
     }
     if(!proxy_hdr_sent)
@@ -238,6 +256,9 @@ void make_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
     return;
 }
 
+/*
+ * Sends bytes of length len to clientfd; prints an error statement if unsuccessful
+ */
 void safe_send(int clientfd, char *bytes, int len)
 {
     printf("%s", bytes);
