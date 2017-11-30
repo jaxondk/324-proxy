@@ -7,7 +7,7 @@
 
 BYUNETID = jaxondk
 VERSION = 1
-HANDINDIR = /users/faculty/snell/CS324/handin/Fall2017/ProxyLab1
+HANDINDIR = /users/faculty/snell/CS324/handin/Fall2017/ProxyLab2
 
 
 CC = gcc
@@ -16,19 +16,22 @@ LDFLAGS = -lpthread
 
 all: proxy
 
+sbuf.o: sbuf.c sbuf.h
+	$(CC) $(CFLAGS) -c sbuf.c
+
 csapp.o: csapp.c csapp.h
 	$(CC) $(CFLAGS) -c csapp.c
 
-proxy.o: proxy.c csapp.h
+proxy.o: proxy.c csapp.h sbuf.h
 	$(CC) $(CFLAGS) -c proxy.c
 
-proxy: proxy.o csapp.o
-	$(CC) $(CFLAGS) proxy.o csapp.o -o proxy $(LDFLAGS)
+proxy: proxy.o csapp.o sbuf.o
+	$(CC) $(CFLAGS) proxy.o csapp.o sbuf.o -o proxy $(LDFLAGS)
 
 # Creates a tarball in ../proxylab-handin.tar that you can then
 # hand in. DO NOT MODIFY THIS!
 handin:
-	(make clean; cd ..; tar cvf proxylab-handin.tar proxylab-handout --exclude tiny --exclude nop-server.py --exclude proxy --exclude driver.sh --exclude port-for-user.pl --exclude free-port.sh --exclude ".*"; cp proxylab-handin.tar $(HANDINDIR)/$(BYUNETID)-$(VERSION)-proxylab-handin.tar)
+	(make clean; cd ..; tar cvf proxylab-handin.tar proxy --exclude tiny --exclude nop-server.py --exclude proxy --exclude driver.sh --exclude port-for-user.pl --exclude free-port.sh --exclude ".*"; cp proxylab-handin.tar $(HANDINDIR)/$(BYUNETID)-$(VERSION)-proxylab-handin.tar)
 
 clean:
 	rm -f *~ *.o proxy core *.tar *.zip *.gzip *.bzip *.gz
