@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "csapp.h"
 #include "sbuf.h"
+#include "cache.h"
 
 #define NTHREADS  4
 #define CONNQSIZE  16   //pretty sure these 2 Q sizes must be the same
@@ -17,6 +18,7 @@ static const char *connection_hdr = "Connection: close\r\n";
 
 int_sbuf_t connQ; // Shared buffer of connected descriptors
 str_sbuf_t logQ; // Shared buffer of log messages
+Node *head = NULL;
 
 void *doit(void *vargp);
 void *logger(void *vargp);
@@ -26,11 +28,12 @@ void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
                  char *shortmsg, char *longmsg);
-int fwd_request(char *uri, rio_t *rio);
+int fwd_request(char *uri, rio_t *rio, Node *head);
 void send_request_line(char *olduri, int clientfd);
 void send_fwd_requesthdrs(rio_t *rp, char *host, int clientfd);
 void get_host_and_port(char *olduri, char *host, char *port);
 void safe_send(int clientfd, char *bytes, int len);
+void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, char *copy);
 void fwd_response(int rcvr_fd, int responder_fd);
 
 int i_after_slashes(int nslashes, char *bytes);
@@ -57,7 +60,7 @@ int main(int argc, char **argv)
     Pthread_create(&tid, NULL, logger, NULL); //create logger thread
 
     for (int i = 0; i < NTHREADS; i++)  // Create worker threads
-	     Pthread_create(&tid, NULL, doit, NULL);
+	     Pthread_create(&tid, NULL, doit, head);
 
     while (1)
     {
@@ -65,15 +68,6 @@ int main(int argc, char **argv)
 	    connfd = Accept(listenfd, (SA *) &clientaddr, &clientlen);
 	    int_sbuf_insert(&connQ, connfd); // Insert connfd in buffer
     }
-    // while (1) {
-    //     clientlen = sizeof(clientaddr);
-    //     connfd = Accept(listenfd, (SA *)&clientaddr, &clientlen); //line:netp:tiny:accept
-    //     Getnameinfo((SA *) &clientaddr, clientlen, hostname, MAXLINE,
-    //                 port, MAXLINE, 0);
-    //     printf("Accepted connection from (%s, %s)\n", hostname, port);
-    //     pthread_t tid;
-    //     Pthread_create(&tid, NULL, doit, connfd);
-    // }
 }
 
 
@@ -82,7 +76,7 @@ int main(int argc, char **argv)
  *
  * See https://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html for HTTP rules
  */
-void *doit(void *vargp)
+void *doit(void *head)
 {
     Pthread_detach(pthread_self());
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
@@ -107,7 +101,7 @@ void *doit(void *vargp)
             continue;
         }
         if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
-            int responder_fd = fwd_request(uri, &rio);
+            int responder_fd = fwd_request(uri, &rio, head);
             fwd_response(fd, responder_fd);
             Close(responder_fd);
             Close(fd);
@@ -142,7 +136,7 @@ void *logger(void *vargp)
  *
  * Returns the file descriptor for the socket connection with desired host
  */
-int fwd_request(char *uri, rio_t *rio)
+int fwd_request(char *uri, rio_t *rio, Node *head)
 {
     char host[MAXLINE];
     char port[6];
@@ -156,12 +150,15 @@ int fwd_request(char *uri, rio_t *rio)
 
 /*
  * Forwards the response from the host at responder fd to the initiator of the original request at receiver fd.
+ * We need the uri here for caching purposes (it's the original URI sent to the proxy by the browser)
  */
 void fwd_response(int rcvr_fd, int responder_fd)
 {
     rio_t rio_responder;
     Rio_readinitb(&rio_responder, responder_fd);
 
+    char completeResponse[MAXLINE]; //for cache
+    int resp_i = 0; //for cache
     char bytes[MAXLINE];
     int len = 2; //just in case the response is just "\r\n", as this would mean len would never get initialized
     int content_len = 0;
@@ -175,7 +172,7 @@ void fwd_response(int rcvr_fd, int responder_fd)
             int i = strlen("Content-length:");
             content_len = atoi((bytes+i));
         }
-        safe_send(rcvr_fd, bytes, len);
+        safe_send_and_copy(rcvr_fd, bytes, len, &resp_i, completeResponse);
     } while(strcmp(bytes, "\r\n"));
 
     //send response body
@@ -184,8 +181,11 @@ void fwd_response(int rcvr_fd, int responder_fd)
     {
         len = Rio_readlineb(&rio_responder, bytes, MAXLINE);
         total_len += len;
-        safe_send(rcvr_fd, bytes, len);
+        safe_send_and_copy(rcvr_fd, bytes, len, &resp_i, completeResponse);
     }
+    printf("--------Response Saved in Buffer:----------\n");
+    printf("%s", completeResponse);
+    printf("----------End Response Saved in Buf--------\n");
 }
 
 /*
@@ -290,6 +290,15 @@ void send_fwd_requesthdrs(rio_t *rp, char *host, int clientfd)
 void safe_send(int clientfd, char *bytes, int len)
 {
     printf("%s", bytes);
+    if(rio_writen(clientfd, bytes, len) < 0)
+        printf("*** Send failed for: %s ***\n", bytes);
+}
+
+void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, char *copy)
+{
+    printf("%s    -> copied to cache buffer\n", bytes);
+    memcpy(&copy[*copy_i], bytes, len); //copies all of bytes[] (len) to copy[] starting at copy_i
+    *copy_i += len; //incr copy_i
     if(rio_writen(clientfd, bytes, len) < 0)
         printf("*** Send failed for: %s ***\n", bytes);
 }
