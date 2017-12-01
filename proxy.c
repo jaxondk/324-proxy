@@ -33,15 +33,14 @@ void send_request_line(char *olduri, int clientfd);
 void send_fwd_requesthdrs(rio_t *rp, char *host, int clientfd);
 void get_host_and_port(char *olduri, char *host, char *port);
 void safe_send(int clientfd, char *bytes, int len);
-void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, char *copy);
-void fwd_response(int rcvr_fd, int responder_fd);
+void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, unsigned char *copy);
+void fwd_response(int rcvr_fd, int responder_fd, char *url);
 
 int i_after_slashes(int nslashes, char *bytes);
 
 int main(int argc, char **argv)
 {
     int listenfd, connfd;
-    // char hostname[MAXLINE], port[MAXLINE];
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
     pthread_t tid;
@@ -102,7 +101,7 @@ void *doit(void *head)
         }
         if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
             int responder_fd = fwd_request(uri, &rio, head);
-            fwd_response(fd, responder_fd);
+            fwd_response(fd, responder_fd, uri);
             Close(responder_fd);
             Close(fd);
             str_sbuf_insert(&logQ, "Proxy request processed\n"); // Insert message into logQ
@@ -150,15 +149,16 @@ int fwd_request(char *uri, rio_t *rio, Node *head)
 
 /*
  * Forwards the response from the host at responder fd to the initiator of the original request at receiver fd.
- * We need the uri here for caching purposes (it's the original URI sent to the proxy by the browser)
+ * We need the url here for caching purposes (it's the original URI sent to the proxy by the browser)
  */
-void fwd_response(int rcvr_fd, int responder_fd)
+void fwd_response(int rcvr_fd, int responder_fd, char *url)
 {
     rio_t rio_responder;
     Rio_readinitb(&rio_responder, responder_fd);
 
-    char completeResponse[MAXLINE]; //for cache
+    unsigned char *completeResponse = (unsigned char*)malloc(MAXLINE*sizeof(unsigned char)); //for cache
     int resp_i = 0; //for cache
+    int total_len = 0;
     char bytes[MAXLINE];
     int len = 2; //just in case the response is just "\r\n", as this would mean len would never get initialized
     int content_len = 0;
@@ -167,25 +167,28 @@ void fwd_response(int rcvr_fd, int responder_fd)
     do
     {
         len = Rio_readlineb(&rio_responder, bytes, MAXLINE);
+        total_len += len;
         if(strstr(bytes, "Content-length:"))
         {
             int i = strlen("Content-length:");
             content_len = atoi((bytes+i));
+            total_len += content_len;
         }
         safe_send_and_copy(rcvr_fd, bytes, len, &resp_i, completeResponse);
     } while(strcmp(bytes, "\r\n"));
 
     //send response body
-    int total_len = 0;
-    while(total_len < content_len)
+    int body_len = 0;
+    while(body_len < content_len)
     {
         len = Rio_readlineb(&rio_responder, bytes, MAXLINE);
-        total_len += len;
+        body_len += len;
         safe_send_and_copy(rcvr_fd, bytes, len, &resp_i, completeResponse);
     }
-    printf("--------Response Saved in Buffer:----------\n");
-    printf("%s", completeResponse);
-    printf("----------End Response Saved in Buf--------\n");
+
+    //TODO make thread safe!!!
+    head = push(head, url, total_len, completeResponse);
+    printLL(head);
 }
 
 /*
@@ -294,9 +297,9 @@ void safe_send(int clientfd, char *bytes, int len)
         printf("*** Send failed for: %s ***\n", bytes);
 }
 
-void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, char *copy)
+void safe_send_and_copy(int clientfd, char *bytes, int len, int *copy_i, unsigned char *copy)
 {
-    printf("%s    -> copied to cache buffer\n", bytes);
+    printf("%s",bytes);
     memcpy(&copy[*copy_i], bytes, len); //copies all of bytes[] (len) to copy[] starting at copy_i
     *copy_i += len; //incr copy_i
     if(rio_writen(clientfd, bytes, len) < 0)
