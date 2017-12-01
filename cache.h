@@ -3,6 +3,8 @@
 
 #include<stdio.h>
 #include<stdlib.h>
+#define MAX_CACHE_SIZE 1049000
+#define MAX_OBJECT_SIZE 102400
 
 typedef struct Node {
     char *url;
@@ -12,7 +14,7 @@ typedef struct Node {
     struct Node *prev;
 } Node;
 
-Node* push(Node* head, char *url, int lenbytes, unsigned char *bytes);
+Node* push(Node* head, char *url, int nbytes, unsigned char *bytes);
 Node* toFront(Node* head, Node* moveMe);
 void pop(Node* tail); //TODO not done
 void printLL(Node *head);

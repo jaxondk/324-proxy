@@ -16,6 +16,7 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 static const char *proxy_connect_hdr = "Proxy-Connection: close\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 
+/* Some global vars for the class */
 int_sbuf_t connQ; // Shared buffer of connected descriptors
 str_sbuf_t logQ; // Shared buffer of log messages
 Node *head = NULL;
@@ -187,8 +188,15 @@ void fwd_response(int rcvr_fd, int responder_fd, char *url)
     }
 
     //TODO make thread safe!!!
-    head = push(head, url, total_len, completeResponse);
-    printLL(head);
+    if(total_len > MAX_OBJECT_SIZE)
+    {
+        printf("Object for %s bigger than max object size, not caching\n", url);
+    }
+    else
+    {
+        head = push(head, url, total_len, completeResponse);
+        printLL(head);
+    }
 }
 
 /*
