@@ -3,7 +3,8 @@
 #include "sbuf.h"
 
 #define NTHREADS  4
-#define SBUFSIZE  16
+#define CONNQSIZE  16   //pretty sure these 2 Q sizes must be the same
+#define LOGQSIZE  16
 
 /* Recommended max cache and object sizes */
 #define MAX_CACHE_SIZE 1049000
@@ -14,9 +15,11 @@ static const char *user_agent_hdr = "User-Agent: Mozilla/5.0 (X11; Linux x86_64;
 static const char *proxy_connect_hdr = "Proxy-Connection: close\r\n";
 static const char *connection_hdr = "Connection: close\r\n";
 
-sbuf_t connQ; // Shared buffer of connected descriptors
+int_sbuf_t connQ; // Shared buffer of connected descriptors
+str_sbuf_t logQ; // Shared buffer of log messages
 
-void *doit(void *fd);
+void *doit(void *vargp);
+void *logger(void *vargp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
 void get_filetype(char *filename, char *filetype);
@@ -47,7 +50,12 @@ int main(int argc, char **argv)
     }
 
     listenfd = Open_listenfd(argv[1]);
-    sbuf_init(&connQ, SBUFSIZE);
+
+    int_sbuf_init(&connQ, CONNQSIZE); //initialize queues
+    str_sbuf_init(&logQ, LOGQSIZE);
+
+    Pthread_create(&tid, NULL, logger, NULL); //create logger thread
+
     for (int i = 0; i < NTHREADS; i++)  // Create worker threads
 	     Pthread_create(&tid, NULL, doit, NULL);
 
@@ -55,7 +63,7 @@ int main(int argc, char **argv)
     {
         clientlen = sizeof(clientaddr);
 	    connfd = Accept(listenfd, (SA *) &clientaddr, &clientlen);
-	    sbuf_insert(&connQ, connfd); // Insert connfd in buffer
+	    int_sbuf_insert(&connQ, connfd); // Insert connfd in buffer
     }
     // while (1) {
     //     clientlen = sizeof(clientaddr);
@@ -77,22 +85,17 @@ int main(int argc, char **argv)
 void *doit(void *vargp)
 {
     Pthread_detach(pthread_self());
-    // int is_static;
-    // struct stat sbuf;
-    // char filename[MAXLINE], cgiargs[MAXLINE];
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     rio_t rio;
 
-
     while(1)
     {
-        int fd = sbuf_remove(&connQ); //remove a connection from the buffer
+        int fd = int_sbuf_remove(&connQ); //remove a connection from the buffer
         Rio_readinitb(&rio, fd);
         if (!Rio_readlineb(&rio, buf, MAXLINE)) { //Rio_readlineb gets the first line from the fd tied to rio and stores it in buf
             Close(fd);
-            //log something(?)
+            str_sbuf_insert(&logQ, "connection file descriptor seems to have been empty\n"); // Insert message into logQ
             continue;
-            // return NULL;
         }
 
         sscanf(buf, "%s %s %s", method, uri, version); //copies the 3 strings from request line into these vars
@@ -100,7 +103,7 @@ void *doit(void *vargp)
             clienterror(fd, method, "501", "Not Implemented",
                         "Tiny does not implement this method");
             Close(fd);
-            //log something(?)
+            str_sbuf_insert(&logQ, "Method other than GET was requested\n"); // Insert message into logQ
             continue;
         }
         if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
@@ -108,45 +111,28 @@ void *doit(void *vargp)
             fwd_response(fd, responder_fd);
             Close(responder_fd);
             Close(fd);
-            //log something(?)
+            str_sbuf_insert(&logQ, "Proxy request processed\n"); // Insert message into logQ
             continue;
         }
-        // /************************** OLD TINY.C FUNCTIONALITY **************************************/
-        // //read_requesthdrs(&rio);
-        //
-        // /* Parse URI from GET request */
-        // is_static = parse_uri(uri, filename, cgiargs);
-        //
-        // if (stat(filename, &sbuf) < 0) {
-        //     clienterror(fd, filename, "404", "Not found",
-    	// 	    "Tiny couldn't find this file");
-        //     Close(fd);
-        //     return NULL;
-        // }
-        //
-        // if (is_static) { /* Serve static content */
-        //     if (!(S_ISREG(sbuf.st_mode)) || !(S_IRUSR & sbuf.st_mode)) { //line:netp:doit:readable
-        //         clienterror(fd, filename, "403", "Forbidden",
-        //             "Tiny couldn't read the file");
-        //         Close(fd);
-        //         return NULL;
-        //     }
-        //     serve_static(fd, filename, sbuf.st_size);        //line:netp:doit:servestatic
-        // }
-        // else { /* Serve dynamic content */
-        //     if (!(S_ISREG(sbuf.st_mode)) || !(S_IXUSR & sbuf.st_mode)) { //line:netp:doit:executable
-        //         clienterror(fd, filename, "403", "Forbidden",
-        //             "Tiny couldn't run the CGI program");
-        //         Close(fd);
-        //         return NULL;
-        //     }
-        //     serve_dynamic(fd, filename, cgiargs);            //line:netp:doit:servedynamic
-        // }
-        //
 
         Close(fd);
-        //log something(?)
+        str_sbuf_insert(&logQ, "Normal (non-proxy) request processed\n"); // Insert message into logQ
     }
+}
+
+void *logger(void *vargp)
+{
+    Pthread_detach(pthread_self());
+    FILE *fp;
+
+    fp = fopen("/tmp/jaxondk-proxylog.txt", "a"); //creates the file if DNE. "a" is for append mode
+    while(1)
+    {
+        char *msg = str_sbuf_remove(&logQ); //remove a log message from the buffer
+        fprintf(fp, msg); //write msg to fp
+    }
+
+    fclose(fp); //close the file
 }
 
 /*
@@ -214,6 +200,9 @@ void send_request_line(char *olduri, int clientfd)
     int len = sprintf(reqline, "GET %s HTTP/1.1\r\n", newuri);
 
     safe_send(clientfd, reqline, len);
+    // char msg[MAXLINE];
+    // sprintf(msg, "Clientfd: %d. Request line received:\n%s",clientfd,reqline);
+    // str_sbuf_insert(&logQ, msg);
 }
 
 /*
@@ -326,103 +315,6 @@ int i_after_slashes(int nslashes, char *bytes)
 /****************************************************************************************************/
 /****************************************************************************************************/
 /****************************************************************************************************/
-
-
-/*
- * parse_uri - parse URI into filename and CGI args
- *             return 0 if dynamic content, 1 if static
- */
-// int parse_uri(char *uri, char *filename, char *cgiargs)
-// {
-//     char *ptr;
-//
-//     if (!strstr(uri, "cgi-bin")) {  /* Static content */
-//         strcpy(cgiargs, "");
-//         strcpy(filename, ".");
-//         strcat(filename, uri);
-//         if (uri[strlen(uri)-1] == '/')
-//             strcat(filename, "home.html");
-//         return 1;
-//     }
-//     else {  /* Dynamic content */
-//         ptr = index(uri, '?');
-//         if (ptr) {
-//             strcpy(cgiargs, ptr+1);
-//             *ptr = '\0';
-//         }
-//         else
-//             strcpy(cgiargs, "");
-//         strcpy(filename, ".");
-//         strcat(filename, uri);
-//         return 0;
-//     }
-// }
-//
-// /*
-//  * serve_static - copy a file back to the client
-//  */
-// void serve_static(int fd, char *filename, int filesize)
-// {
-//     int srcfd;
-//     char *srcp, filetype[MAXLINE], buf[MAXBUF];
-//
-//     /* Send response headers to client */
-//     get_filetype(filename, filetype);       //line:netp:servestatic:getfiletype
-//     sprintf(buf, "HTTP/1.0 200 OK\r\n");    //line:netp:servestatic:beginserve
-//     sprintf(buf, "%sServer: Tiny Web Server\r\n", buf);
-//     sprintf(buf, "%sConnection: close\r\n", buf);
-//     sprintf(buf, "%sContent-length: %d\r\n", buf, filesize);
-//     sprintf(buf, "%sContent-type: %s\r\n\r\n", buf, filetype);
-//     Rio_writen(fd, buf, strlen(buf));       //line:netp:servestatic:endserve
-//     printf("Response headers:\n");
-//     printf("%s", buf);
-//
-//     /* Send response body to client */
-//     srcfd = Open(filename, O_RDONLY, 0);    //line:netp:servestatic:open
-//     srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);//line:netp:servestatic:mmap
-//     Close(srcfd);                           //line:netp:servestatic:close
-//     Rio_writen(fd, srcp, filesize);         //line:netp:servestatic:write
-//     Munmap(srcp, filesize);                 //line:netp:servestatic:munmap
-// }
-//
-// /*
-//  * get_filetype - derive file type from file name
-//  */
-// void get_filetype(char *filename, char *filetype)
-// {
-//     if (strstr(filename, ".html"))
-// 	strcpy(filetype, "text/html");
-//     else if (strstr(filename, ".gif"))
-// 	strcpy(filetype, "image/gif");
-//     else if (strstr(filename, ".png"))
-// 	strcpy(filetype, "image/png");
-//     else if (strstr(filename, ".jpg"))
-// 	strcpy(filetype, "image/jpeg");
-//     else
-// 	strcpy(filetype, "text/plain");
-// }
-//
-// /*
-//  * serve_dynamic - run a CGI program on behalf of the client
-//  */
-// void serve_dynamic(int fd, char *filename, char *cgiargs)
-// {
-//     char buf[MAXLINE], *emptylist[] = { NULL };
-//
-//     /* Return first part of HTTP response */
-//     sprintf(buf, "HTTP/1.0 200 OK\r\n");
-//     Rio_writen(fd, buf, strlen(buf));
-//     sprintf(buf, "Server: Tiny Web Server\r\n");
-//     Rio_writen(fd, buf, strlen(buf));
-//
-//     if (Fork() == 0) { /* Child */ //line:netp:servedynamic:fork
-// 	/* Real server would set all CGI vars here */
-// 	setenv("QUERY_STRING", cgiargs, 1); //line:netp:servedynamic:setenv
-// 	Dup2(fd, STDOUT_FILENO);         /* Redirect stdout to client */ //line:netp:servedynamic:dup2
-// 	Execve(filename, emptylist, environ); /* Run CGI program */ //line:netp:servedynamic:execve
-//     }
-//     Wait(NULL); /* Parent waits for and reaps child */ //line:netp:servedynamic:wait
-// }
 
 /*
  * clienterror - returns an error message to the client
