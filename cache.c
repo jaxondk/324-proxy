@@ -61,6 +61,28 @@ void pop(Node* tail)
     tail = NULL;
 }
 
+//returns the node in the LL with the given url. If no such node, returns NULL
+Node* find(Node* head, char *url)
+{
+    if(head == NULL)
+        return NULL;
+    Node* curr = head;
+    printf("Given url: %s\n",url);
+    printf("curr url: %s\n",curr->url);
+    while(strcmp(curr->url, url)) //while curr url isn't equal to given url
+    {
+        printf("curr url: %s\n",curr->url);
+        curr = curr->next;
+        if(curr == head)
+        {
+            curr = NULL;
+            break;
+        }
+    }
+
+    return curr;
+}
+
 void printLL(Node *head)
 {
     if(head == NULL)
@@ -80,6 +102,11 @@ void printLL(Node *head)
 
 void printNode(Node *node)
 {
+    if(node == NULL) {
+        printf("Node is NULL\n");
+        return;
+    }
+
     printf("------Node begin------\n");
     printf("URL: %s\nnbytes: %d\nBytes:\n%s",node->url, node->nbytes, node->bytes);
     printf("-------Node end-------\n");

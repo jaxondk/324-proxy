@@ -1,8 +1,9 @@
 #ifndef __CACHE_H__
 #define __CACHE_H__
 
-#include<stdio.h>
-#include<stdlib.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #define MAX_CACHE_SIZE 1049000
 #define MAX_OBJECT_SIZE 102400
 
@@ -16,6 +17,7 @@ typedef struct Node {
 
 Node* push(Node* head, char *url, int nbytes, unsigned char *bytes);
 Node* toFront(Node* head, Node* moveMe);
+Node* find(Node* head, char *url);
 void pop(Node* tail); //TODO not done
 void printLL(Node *head);
 void printNode(Node *node);

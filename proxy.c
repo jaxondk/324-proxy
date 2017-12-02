@@ -60,7 +60,7 @@ int main(int argc, char **argv)
     Pthread_create(&tid, NULL, logger, NULL); //create logger thread
 
     for (int i = 0; i < NTHREADS; i++)  // Create worker threads
-	     Pthread_create(&tid, NULL, doit, head);
+	     Pthread_create(&tid, NULL, doit, NULL);
 
     while (1)
     {
@@ -76,7 +76,7 @@ int main(int argc, char **argv)
  *
  * See https://www.w3.org/Protocols/rfc2616/rfc2616-sec5.html for HTTP rules
  */
-void *doit(void *head)
+void *doit(void *vargp)
 {
     Pthread_detach(pthread_self());
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
@@ -101,9 +101,19 @@ void *doit(void *head)
             continue;
         }
         if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
-            int responder_fd = fwd_request(uri, &rio, head);
-            fwd_response(fd, responder_fd, uri);
-            Close(responder_fd);
+            Node *cached_item = find(head, uri);
+            if(cached_item != NULL)
+            {
+                toFront(head, cached_item); //update for LRU policy
+                printf("Item for request %s already in cache\n", uri);
+                safe_send(fd, cached_item->bytes, cached_item->nbytes);
+            }
+            else
+            {
+                int responder_fd = fwd_request(uri, &rio, head);
+                fwd_response(fd, responder_fd, uri);
+                Close(responder_fd);
+            }
             Close(fd);
             str_sbuf_insert(&logQ, "Proxy request processed\n"); // Insert message into logQ
             continue;
@@ -195,7 +205,7 @@ void fwd_response(int rcvr_fd, int responder_fd, char *url)
     else
     {
         head = push(head, url, total_len, completeResponse);
-        printLL(head);
+        // printLL(head);
     }
 }
 
