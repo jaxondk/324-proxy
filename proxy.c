@@ -3,7 +3,7 @@
 #include "sbuf.h"
 #include "cache.h"
 
-#define NTHREADS  4
+#define NTHREADS  5
 #define CONNQSIZE  16   //pretty sure these 2 Q sizes must be the same
 #define LOGQSIZE  16
 
