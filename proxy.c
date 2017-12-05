@@ -19,6 +19,7 @@ static const char *connection_hdr = "Connection: close\r\n";
 /* Some global vars for the class */
 int_sbuf_t connQ; // Shared buffer of connected descriptors
 str_sbuf_t logQ; // Shared buffer of log messages
+sem_t mutex;
 Node *head = NULL;
 
 void *doit(void *vargp);
@@ -45,6 +46,8 @@ int main(int argc, char **argv)
     socklen_t clientlen;
     struct sockaddr_storage clientaddr;
     pthread_t tid;
+
+    Sem_init(&mutex, 0, 1);
 
     /* Check command line args */
     if (argc != 2) {
@@ -101,10 +104,14 @@ void *doit(void *vargp)
             continue;
         }
         if(uri[0] != '/') { //if it doesn't start with a '/', the URI is absolute URI, so it's a proxy request
+            P(&mutex);
             Node *cached_item = find(head, uri);
+            V(&mutex);
             if(cached_item != NULL)
             {
+                P(&mutex);
                 toFront(head, cached_item); //update for LRU policy
+                V(&mutex);
                 printf("Item for request %s already in cache\n", uri);
                 safe_send(fd, cached_item->bytes, cached_item->nbytes);
             }
@@ -204,8 +211,10 @@ void fwd_response(int rcvr_fd, int responder_fd, char *url)
     }
     else
     {
+        P(&mutex);
         head = push(head, url, total_len, completeResponse);
         // printLL(head);
+        V(&mutex);
     }
 }
 
